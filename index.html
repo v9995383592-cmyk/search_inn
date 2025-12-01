@@ -35,3 +35,181 @@
         }
         .status-info {
             color: #1f4b99;
+        }
+        #innBox {
+            margin-top: 8px;
+            padding: 8px 10px;
+            border-radius: 8px;
+            background: #f0f4ff;
+            font-size: 14px;
+        }
+        #runBtn {
+            margin-top: 16px;
+            padding: 10px 16px;
+            border-radius: 8px;
+            border: none;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            background: #0b63f6;
+            color: #ffffff;
+        }
+        #runBtn:disabled {
+            opacity: 0.6;
+            cursor: default;
+        }
+    </style>
+</head>
+<body>
+<div id="container">
+    <h2>Привязка компании по ИНН</h2>
+    <div id="innBox">
+        ИНН из лида: <b><span id="innValue">загружаем…</span></b>
+    </div>
+    <button id="runBtn" disabled>Найти и привязать компанию</button>
+    <div id="status" class="status-info">Инициализация приложения…</div>
+</div>
+
+<script>
+    let leadId = null;
+    let innFromLead = null;
+
+    function setStatus(msg, type) {
+        const el = document.getElementById('status');
+        el.textContent = msg;
+        el.className = '';
+        if (type === 'ok') el.classList.add('status-ok');
+        else if (type === 'error') el.classList.add('status-error');
+        else el.classList.add('status-info');
+    }
+
+    function setInn(value) {
+        document.getElementById('innValue').textContent = value || 'не заполнен';
+    }
+
+    function setButtonEnabled(enabled) {
+        document.getElementById('runBtn').disabled = !enabled;
+    }
+
+    // Основная логика
+    function attachCompanyByInn() {
+        if (!innFromLead) {
+            setStatus('В лиде не заполнен ИНН. Заполните поле и сохраните лид.', 'error');
+            return;
+        }
+
+        setButtonEnabled(false);
+        setStatus('Ищу реквизиты компании с ИНН ' + innFromLead + ' …', 'info');
+
+        // 1) Ищем реквизит с таким ИНН (RQ_INN) у компаний (ENTITY_TYPE_ID = 4)
+        BX24.callMethod(
+            'crm.requisite.list',
+            {
+                filter: {
+                    'RQ_INN': innFromLead,
+                    'ENTITY_TYPE_ID': 4
+                },
+                select: ['ID', 'ENTITY_ID', 'RQ_INN']
+            },
+            function (resReq) {
+                if (resReq.error()) {
+                    console.error(resReq.error());
+                    setStatus('Ошибка поиска реквизитов: ' + resReq.error(), 'error');
+                    setButtonEnabled(true);
+                    return;
+                }
+
+                const requisites = resReq.data() || [];
+
+                if (!requisites.length) {
+                    setStatus('Компания с ИНН ' + innFromLead + ' по реквизитам не найдена.', 'error');
+                    setButtonEnabled(true);
+                    return;
+                }
+
+                if (requisites.length > 1) {
+                    setStatus('Найдено несколько компаний с этим ИНН. Требуется выбрать вручную.', 'error');
+                    console.log('Requisites:', requisites);
+                    setButtonEnabled(true);
+                    return;
+                }
+
+                const companyId = parseInt(requisites[0].ENTITY_ID, 10);
+                if (!companyId) {
+                    setStatus('Некорректный ENTITY_ID у реквизита. Проверь реквизиты компании.', 'error');
+                    setButtonEnabled(true);
+                    return;
+                }
+
+                setStatus('Найдена компания (ID ' + companyId + '). Привязываю к лиду…', 'info');
+
+                // 2) Привязываем компанию к лиду
+                BX24.callMethod(
+                    'crm.lead.update',
+                    {
+                        id: leadId,
+                        fields: {
+                            'COMPANY_ID': companyId
+                        }
+                    },
+                    function (resUpdate) {
+                        if (resUpdate.error()) {
+                            console.error(resUpdate.error());
+                            setStatus('Ошибка привязки компании: ' + resUpdate.error(), 'error');
+                        } else {
+                            setStatus('Компания (ID ' + companyId + ') успешно привязана к лиду.', 'ok');
+                        }
+                        setButtonEnabled(true);
+                    }
+                );
+            }
+        );
+    }
+
+    // Инициализация в Bitrix24
+    if (!window.BX24) {
+        setStatus('Это приложение должно открываться из Bitrix24 как локальное приложение.', 'error');
+    } else {
+        BX24.init(function () {
+            const placementInfo = BX24.getPlacementInfo();
+            leadId = placementInfo && placementInfo.options && placementInfo.options.ID;
+
+            if (!leadId) {
+                setStatus('Не удалось получить ID лида из placement. Открой приложение внутри карточки лида.', 'error');
+                return;
+            }
+
+            setStatus('Получаю данные лида…', 'info');
+
+            // Получаем лид и читаем ИНН
+            BX24.callMethod(
+                'crm.lead.get',
+                { id: leadId },
+                function (resLead) {
+                    if (resLead.error()) {
+                        console.error(resLead.error());
+                        setStatus('Ошибка получения лида: ' + resLead.error(), 'error');
+                        return;
+                    }
+
+                    const lead = resLead.data();
+                    // ТВОЕ поле ИНН в лиде
+                    innFromLead = lead['UF_CRM_1764581863'] || '';
+                    setInn(innFromLead || 'не заполнен');
+
+                    if (!innFromLead) {
+                        setStatus('В лиде не заполнено поле ИНН (UF_CRM_1764581863). Заполни ИНН и сохрани лид.', 'error');
+                        setButtonEnabled(false);
+                    } else {
+                        setStatus('ИНН получен. Нажми «Найти и привязать компанию».', 'info');
+                        setButtonEnabled(true);
+                    }
+                }
+            );
+        });
+
+        document.getElementById('runBtn').addEventListener('click', attachCompanyByInn);
+    }
+</script>
+</body>
+</html>
